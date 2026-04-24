@@ -1,5 +1,4 @@
-# search_packhum
-A search and export tool for PHI
+#Veatriki, a search and export tool for PHI
 
 Quickstart:
 1. Download Python 3.7+ from https://www.python.org/downloads/ and install
