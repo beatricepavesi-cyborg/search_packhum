@@ -32,6 +32,9 @@ class PackhumSearchGUI:
         self.current_results = []
         self.dark_mode = False
         
+        # Create main scrollable canvas
+        self.create_scrollable_canvas()
+        
         # Create GUI
         self.create_menu()
         self.create_header()
@@ -42,6 +45,57 @@ class PackhumSearchGUI:
         
         # Load data
         self.load_data()
+    
+    def create_scrollable_canvas(self):
+        """Create a scrollable canvas for the entire interface"""
+        # Main container frame
+        self.main_container = ttk.Frame(self.root)
+        self.main_container.pack(fill=tk.BOTH, expand=True)
+        
+        # Create canvas and scrollbar
+        self.canvas = tk.Canvas(self.main_container, highlightthickness=0)
+        self.scrollbar = ttk.Scrollbar(self.main_container, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        
+        # Pack scrollbar and canvas
+        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # Create frame inside canvas
+        self.scrollable_frame = ttk.Frame(self.canvas)
+        self.canvas_window = self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        
+        # Configure scroll region when frame size changes
+        self.scrollable_frame.bind("<Configure>", self.on_frame_configure)
+        self.canvas.bind("<Configure>", self.on_canvas_configure)
+        
+        # Bind mouse wheel for scrolling
+        self.bind_mousewheel()
+    
+    def on_frame_configure(self, event=None):
+        """Set the scroll region to encompass the inner frame"""
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+    
+    def on_canvas_configure(self, event):
+        """Update the inner frame width to fill the canvas"""
+        self.canvas.itemconfig(self.canvas_window, width=event.width)
+    
+    def bind_mousewheel(self):
+        """Bind mouse wheel for scrolling"""
+        def on_mousewheel(event):
+            self.canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        
+        def bind_mousewheel_recursive(widget):
+            """Recursively bind mousewheel to all widgets"""
+            widget.bind("<MouseWheel>", on_mousewheel, add=True)
+            for child in widget.winfo_children():
+                bind_mousewheel_recursive(child)
+        
+        # Bind to all widgets in the scrollable frame
+        bind_mousewheel_recursive(self.scrollable_frame)
+        
+        # Also bind to the canvas itself
+        self.canvas.bind("<MouseWheel>", on_mousewheel)
     
     def setup_styles(self):
         """Configure custom styles for the application"""
@@ -121,7 +175,7 @@ class PackhumSearchGUI:
     
     def create_header(self):
         """Create header with title and description"""
-        header_frame = tk.Frame(self.root, bg=self.bg_color, height=80)
+        header_frame = tk.Frame(self.scrollable_frame, bg=self.bg_color, height=80)
         header_frame.pack(fill=tk.X, padx=20, pady=(10, 5))
         header_frame.pack_propagate(False)
         
@@ -138,7 +192,7 @@ class PackhumSearchGUI:
     
     def create_search_frame(self):
         """Create search filters frame"""
-        search_frame = ttk.LabelFrame(self.root, text="🔍 Search Filters", 
+        search_frame = ttk.LabelFrame(self.scrollable_frame, text="🔍 Search Filters", 
                                       style="Header.TLabelframe", padding=15)
         search_frame.pack(fill=tk.X, padx=20, pady=10)
         
@@ -305,7 +359,7 @@ class PackhumSearchGUI:
     
     def create_results_frame(self):
         """Create results display frame with all columns"""
-        results_frame = ttk.LabelFrame(self.root, text="📊 Search Results", 
+        results_frame = ttk.LabelFrame(self.scrollable_frame, text="📊 Search Results", 
                                        style="Header.TLabelframe", padding=15)
         results_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
         
@@ -389,7 +443,7 @@ class PackhumSearchGUI:
     
     def create_export_frame(self):
         """Create export frame with filename entry and export buttons"""
-        export_frame = ttk.LabelFrame(self.root, text="💾 Export Results", 
+        export_frame = ttk.LabelFrame(self.scrollable_frame, text="💾 Export Results", 
                                       style="Header.TLabelframe", padding=15)
         export_frame.pack(fill=tk.X, padx=20, pady=10)
         
@@ -834,7 +888,6 @@ class PackhumSearchGUI:
         self.status_bar.config(text="🗑 Filters cleared")
         self.search_status.config(text="● Ready", fg=self.success_color)
     
-
     def show_about(self):
         """Show about dialog"""
         about_text = """🏛️ Veatriki, a Packhum search and export tool by Beatrice "Bice" Pavesi
