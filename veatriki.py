@@ -350,6 +350,11 @@ class PackhumSearchGUI:
                                            bg=self.bg_color)
         self.results_count_label.pack(side=tk.LEFT)
 
+        tk.Label(count_frame,
+                 text="Click / Shift+click to select for export  ·  Double-click to view details",
+                 font=("Segoe UI", 8, "italic"), fg="#7f8c8d", bg=self.bg_color
+                 ).pack(side=tk.RIGHT, padx=10)
+
         tree_frame = tk.Frame(results_frame, bg=self.bg_color)
         tree_frame.pack(fill=tk.BOTH, expand=True)
 
@@ -357,7 +362,8 @@ class PackhumSearchGUI:
                    "Region Sub", "Region Sub ID", "Date String", "Date Min",
                    "Date Max", "Date Circa", "Score")
 
-        self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=15)
+        self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=15,
+                                 selectmode='extended')
 
         self.tree.heading("ID", text="🆔 ID")
         self.tree.heading("Text", text="📜 Text")
@@ -396,7 +402,8 @@ class PackhumSearchGUI:
         tree_frame.grid_rowconfigure(0, weight=1)
         tree_frame.grid_columnconfigure(0, weight=1)
 
-        self.tree.bind('<<TreeviewSelect>>', self.on_result_select)
+        self.tree.bind('<<TreeviewSelect>>', self.on_selection_change)
+        self.tree.bind('<Double-1>', self.on_result_double_click)
 
         details_frame = ttk.LabelFrame(results_frame, text="📖 Entry Details",
                                       style="Header.TLabelframe", padding=10)
@@ -812,22 +819,37 @@ class PackhumSearchGUI:
             self.status_bar.config(
                 text=f"⚠️ Showing first 2000 of {len(results):,} results (use export for all)")
 
-    def on_result_select(self, event):
-        """Handle result selection"""
-        selection = self.tree.selection()
-        if not selection:
-            return
+    def on_selection_change(self, event):
+        """Update status bar with selection count."""
+        n = len(self.tree.selection())
+        if n == 1:
+            self.status_bar.config(
+                text="1 row selected · double-click to view details · Export saves selection")
+        elif n > 1:
+            self.status_bar.config(
+                text=f"{n} rows selected · Export saves selection")
 
-        item = self.tree.item(selection[0])
-        values = item['values']
+    def on_result_double_click(self, event):
+        """Show details for the double-clicked row."""
+        iid = self.tree.identify_row(event.y)
+        if not iid:
+            return
+        values = self.tree.item(iid)['values']
         if not values:
             return
-
         selected_id = values[0]
         for result in self.current_results:
             if result.get('id') == selected_id:
                 self.display_entry_details(result)
                 break
+
+    def _get_selected_entries(self):
+        """Return selected rows, or all current_results if nothing is selected."""
+        sel = self.tree.selection()
+        if not sel:
+            return self.current_results
+        selected_ids = {self.tree.item(iid)['values'][0] for iid in sel}
+        return [e for e in self.current_results if e.get('id') in selected_ids]
 
     def display_entry_details(self, entry):
         """Display full entry details in text area"""
@@ -881,8 +903,9 @@ class PackhumSearchGUI:
         return "\n║ ".join(lines)
 
     def export_results_csv(self):
-        """Export current results to CSV with user-specified filename"""
-        if not self.current_results:
+        """Export selected rows (or all results) to CSV."""
+        entries = self._get_selected_entries()
+        if not entries:
             messagebox.showwarning("Warning", "⚠️ No results to export")
             return
 
@@ -903,16 +926,17 @@ class PackhumSearchGUI:
                 with open(filename, 'w', newline='', encoding='utf-8') as f:
                     writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
                     writer.writeheader()
-                    writer.writerows(self.current_results)
+                    writer.writerows(entries)
 
-                messagebox.showinfo("Success", f"✅ Exported {len(self.current_results):,} results to {filename}")
-                self.status_bar.config(text=f"✅ Exported {len(self.current_results):,} results to CSV")
+                messagebox.showinfo("Success", f"✅ Exported {len(entries):,} entries to {filename}")
+                self.status_bar.config(text=f"✅ Exported {len(entries):,} entries to CSV")
             except Exception as e:
                 messagebox.showerror("Error", f"❌ Failed to export: {str(e)}")
 
     def export_results_xml(self):
-        """Export current results to XML with user-specified filename"""
-        if not self.current_results:
+        """Export selected rows (or all results) to XML."""
+        entries = self._get_selected_entries()
+        if not entries:
             messagebox.showwarning("Warning", "⚠️ No results to export")
             return
 
@@ -927,10 +951,10 @@ class PackhumSearchGUI:
         if filename:
             try:
                 root = ET.Element("search_results")
-                root.set("total_results", str(len(self.current_results)))
+                root.set("total_results", str(len(entries)))
                 root.set("export_date", datetime.now().isoformat())
 
-                for entry in self.current_results:
+                for entry in entries:
                     entry_elem = ET.SubElement(root, "entry")
                     for key, value in entry.items():
                         field_elem = ET.SubElement(entry_elem, key)
@@ -946,8 +970,8 @@ class PackhumSearchGUI:
                 with open(filename, 'w', encoding='utf-8') as f:
                     f.write(pretty_xml)
 
-                messagebox.showinfo("Success", f"✅ Exported {len(self.current_results):,} results to {filename}")
-                self.status_bar.config(text=f"✅ Exported {len(self.current_results):,} results to XML")
+                messagebox.showinfo("Success", f"✅ Exported {len(entries):,} entries to {filename}")
+                self.status_bar.config(text=f"✅ Exported {len(entries):,} entries to XML")
             except Exception as e:
                 messagebox.showerror("Error", f"❌ Failed to export XML: {str(e)}")
 
