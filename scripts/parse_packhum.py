@@ -11,7 +11,9 @@ import json
 import re
 import argparse
 import csv
+import os
 import sys
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 from bs4 import BeautifulSoup
@@ -39,6 +41,12 @@ FIELDS = [
     "book_link",
     "note",
 ]
+
+
+def _parse_file(path: Path) -> tuple[int, Path, list[dict] | None]:
+    phi_id = int(path.stem)
+    html = path.read_text(encoding="utf-8")
+    return phi_id, path, parse_html(phi_id, html)
 
 
 def parse_html(phi_id: int, html: str) -> list[dict] | None:
@@ -181,13 +189,17 @@ def main():
 
     skipped_html = []
     written = skipped = 0
+    workers = min(os.cpu_count() or 1, len(html_files))
+    with ProcessPoolExecutor(max_workers=workers) as pool:
+        parsed = list(tqdm(
+            pool.map(_parse_file, html_files, chunksize=50),
+            total=len(html_files), unit="file",
+        ))
+
     with out_path.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=FIELDS)
         writer.writeheader()
-        for path in tqdm(html_files, unit="file", disable=False):
-            phi_id = int(path.stem)
-            html = path.read_text(encoding="utf-8")
-            rows = parse_html(phi_id, html)
+        for phi_id, path, rows in parsed:
             if rows is None:
                 skipped += 1
                 skipped_html.append((phi_id, path))
