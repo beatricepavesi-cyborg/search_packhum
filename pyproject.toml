@@ -6,14 +6,22 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "cloudscraper>=1.2.71",
+    "gradio>=6.15.1",
     "jupyter>=1.1.1",
+    "lancedb>=0.21",
     "matplotlib>=3.10.9",
     "pandas>=3.0.2",
+    "rapidfuzz>=3.0",
     "seaborn>=0.13.2",
     "tqdm>=4.67.3",
 ]
 
+[tool.hatch.build.targets.wheel]
+packages = ["src/veatriki"]
+
 [dependency-groups]
 dev = [
     "ipykernel>=7.2.0",
+    "matplotlib>=3.10.9",
+    "seaborn>=0.13.2",
 ]
