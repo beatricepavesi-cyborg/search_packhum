@@ -17,6 +17,19 @@ import threading
 from pathlib import Path
 from datetime import datetime
 
+# Roman numeral ↔ Arabic numeral mapping (I=1 … XXX=30)
+_ROMAN_MAP = [
+    (1,'I'),(2,'II'),(3,'III'),(4,'IV'),(5,'V'),
+    (6,'VI'),(7,'VII'),(8,'VIII'),(9,'IX'),(10,'X'),
+    (11,'XI'),(12,'XII'),(13,'XIII'),(14,'XIV'),(15,'XV'),
+    (16,'XVI'),(17,'XVII'),(18,'XVIII'),(19,'XIX'),(20,'XX'),
+    (21,'XXI'),(22,'XXII'),(23,'XXIII'),(24,'XXIV'),(25,'XXV'),
+    (26,'XXVI'),(27,'XXVII'),(28,'XXVIII'),(29,'XXIX'),(30,'XXX'),
+]
+_ROMAN_TO_INT = {r: n for n, r in _ROMAN_MAP}
+_INT_TO_ROMAN = {n: r for n, r in _ROMAN_MAP}
+
+
 class PackhumSearchGUI:
     def __init__(self, root):
         self.root = root
@@ -32,9 +45,16 @@ class PackhumSearchGUI:
         self.dark_mode = False
 
         # Search enhancement state
-        self.input_mode_var = StringVar(value='auto')
+        self.input_mode_var = StringVar(value='greek')
+        self.use_regex_var = BooleanVar(value=False)
+        self.ignore_signs_var = BooleanVar(value=False)
+        self.book_name_var = StringVar()
+        self.book_ref_var = StringVar()
         self.normalized_text_cache = None
         self.normalized_words_cache = None
+        self.bare_text_cache = None
+        self.latin_text_cache = None
+        self.bare_latin_text_cache = None
         self._result_scores = {}
 
         # Create main scrollable canvas
@@ -144,6 +164,7 @@ class PackhumSearchGUI:
         file_menu.add_separator()
         file_menu.add_command(label="💾 Export CSV", command=self.export_results_csv)
         file_menu.add_command(label="📄 Export XML", command=self.export_results_xml)
+        file_menu.add_command(label="🔵 Export JSON", command=self.export_results_json)
         file_menu.add_separator()
         file_menu.add_command(label="🚪 Exit", command=self.root.quit)
 
@@ -178,7 +199,7 @@ class PackhumSearchGUI:
                                       style="Header.TLabelframe", padding=15)
         search_frame.pack(fill=tk.X, padx=20, pady=10)
 
-        notebook = ttk.Notebook(search_frame, height=250)
+        notebook = ttk.Notebook(search_frame, height=330)
         notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
         basic_frame = ttk.Frame(notebook)
@@ -230,7 +251,7 @@ class PackhumSearchGUI:
         frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
         # Text search
-        tk.Label(frame, text="Greek Inscription Text:",
+        tk.Label(frame, text="Inscription text:",
                 font=("Segoe UI", 10), bg=self.bg_color, anchor=tk.W).grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
         self.text_var = StringVar()
         self.text_entry = ttk.Entry(frame, textvariable=self.text_var, width=70, font=("Segoe UI", 10))
@@ -250,22 +271,50 @@ class PackhumSearchGUI:
         self.id_entry = ttk.Entry(frame, textvariable=self.id_var, width=20, font=("Segoe UI", 10))
         self.id_entry.grid(row=2, column=1, padx=5, pady=5, sticky=tk.W)
 
+        # Book name search
+        tk.Label(frame, text="Book name:",
+                font=("Segoe UI", 10), bg=self.bg_color, anchor=tk.W).grid(row=3, column=0, sticky=tk.W, padx=5, pady=3)
+        self.book_name_entry = ttk.Entry(frame, textvariable=self.book_name_var, width=40, font=("Segoe UI", 10))
+        self.book_name_entry.grid(row=3, column=1, columnspan=2, padx=5, pady=3, sticky=tk.W)
+
+        # Inscription number in book
+        tk.Label(frame, text="Inscription number in book:",
+                font=("Segoe UI", 10), bg=self.bg_color, anchor=tk.W).grid(row=4, column=0, sticky=tk.W, padx=5, pady=3)
+        self.book_ref_entry = ttk.Entry(frame, textvariable=self.book_ref_var, width=40, font=("Segoe UI", 10))
+        self.book_ref_entry.grid(row=4, column=1, columnspan=2, padx=5, pady=3, sticky=tk.W)
+
+        # Regex checkbox
+        self.regex_check = tk.Checkbutton(
+            frame, text="Use regex (applies to text & metadata; disables fuzzy ranking)",
+            variable=self.use_regex_var,
+            font=("Segoe UI", 9), bg=self.bg_color, activebackground=self.bg_color)
+        self.regex_check.grid(row=5, column=0, columnspan=4, sticky=tk.W, padx=5, pady=2)
+
+        # Ignore spaces checkbox
+        self.ignore_signs_check = tk.Checkbutton(
+            frame,
+            text="Also ignore spaces — finds words split across line breaks or brackets (e.g. ε̣[ὐ-\nχήν])",
+            variable=self.ignore_signs_var,
+            font=("Segoe UI", 9), bg=self.bg_color, activebackground=self.bg_color)
+        self.ignore_signs_check.grid(row=6, column=0, columnspan=4, sticky=tk.W, padx=5, pady=2)
+
         # Input mode
         tk.Label(frame, text="Input:",
-                font=("Segoe UI", 9, "bold"), bg=self.bg_color).grid(row=3, column=0, sticky=tk.W, padx=5)
+                font=("Segoe UI", 9, "bold"), bg=self.bg_color).grid(row=7, column=0, sticky=tk.W, padx=5)
         input_frame = tk.Frame(frame, bg=self.bg_color)
-        input_frame.grid(row=3, column=1, columnspan=3, sticky=tk.W, padx=5)
-        for val, label in [('auto', 'Auto-detect'), ('greek', 'Greek / Polytonic'), ('latin', 'Latin transliteration')]:
+        input_frame.grid(row=7, column=1, columnspan=3, sticky=tk.W, padx=5)
+        for val, label in [('greek', 'Greek / Polytonic'), ('latin_translit', 'Latin transliteration'), ('latin', 'Latin script')]:
             tk.Radiobutton(input_frame, text=label, variable=self.input_mode_var, value=val,
                           font=("Segoe UI", 9), bg=self.bg_color,
                           activebackground=self.bg_color).pack(side=tk.LEFT, padx=8)
 
         # Hint
         tk.Label(frame,
-                text=("💡  Results ranked automatically: exact match → all words present → word sequence → fuzzy (1 typo/word)"
-                      " · Latin: th=θ  ph=φ  ch=χ  ps=ψ  ks=ξ  w=ω  h=η  x=ξ  y/u=υ  f=φ"),
+                text=("💡  Editorial signs ([ ] { } ( ) · - …) always ignored · Results ranked: exact → all words → sequence → fuzzy"
+                      " · Latin: th=θ  ph=φ  ch=χ  ps=ψ  ks=ξ  w=ω  h=η  x=ξ  y/u=υ  f=φ"
+                      " · Metadata/Book: Roman↔Arabic expanded automatically (V↔5, X↔10 …)"),
                 font=("Segoe UI", 8, "italic"), bg=self.bg_color, fg="#7f8c8d").grid(
-                row=4, column=0, columnspan=4, sticky=tk.W, padx=5, pady=4)
+                row=8, column=0, columnspan=4, sticky=tk.W, padx=5, pady=4)
 
     def create_region_tab(self, parent):
         """Create region search tab"""
@@ -358,37 +407,41 @@ class PackhumSearchGUI:
         tree_frame = tk.Frame(results_frame, bg=self.bg_color)
         tree_frame.pack(fill=tk.BOTH, expand=True)
 
-        columns = ("ID", "Text", "Metadata", "Region Main", "Region Main ID",
-                   "Region Sub", "Region Sub ID", "Date String", "Date Min",
-                   "Date Max", "Date Circa", "Score")
+        columns = ("ID", "Book name", "Inscription number in book", "Text", "Metadata", "Region main", "Region main ID",
+                   "Region sub", "Region sub ID", "Date string", "Date min",
+                   "Date max", "Date circa", "Score")
 
         self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=15,
                                  selectmode='extended')
 
         self.tree.heading("ID", text="🆔 ID")
+        self.tree.heading("Book name", text="📖 Book name")
+        self.tree.heading("Inscription number in book", text="📑 Inscription number in book ")
         self.tree.heading("Text", text="📜 Text")
         self.tree.heading("Metadata", text="📚 Metadata")
-        self.tree.heading("Region Main", text="🌍 Main Region")
-        self.tree.heading("Region Main ID", text="🔢 Main ID")
-        self.tree.heading("Region Sub", text="📍 Sub Region")
-        self.tree.heading("Region Sub ID", text="🔢 Sub ID")
-        self.tree.heading("Date String", text="📅 Date String")
-        self.tree.heading("Date Min", text="⬇️ Min Year")
-        self.tree.heading("Date Max", text="⬆️ Max Year")
-        self.tree.heading("Date Circa", text="🔄 Circa")
+        self.tree.heading("Region main", text="🌍 Main Region")
+        self.tree.heading("Region main ID", text="🔢 Main ID")
+        self.tree.heading("Region sub", text="📍 Sub Region")
+        self.tree.heading("Region sub ID", text="🔢 Sub ID")
+        self.tree.heading("Date string", text="📅 Date String")
+        self.tree.heading("Date min", text="⬇️ Min Year")
+        self.tree.heading("Date max", text="⬆️ Max Year")
+        self.tree.heading("Date circa", text="🔄 Circa")
         self.tree.heading("Score", text="📊 Score")
 
-        self.tree.column("ID", width=80)
-        self.tree.column("Text", width=300)
-        self.tree.column("Metadata", width=250)
-        self.tree.column("Region Main", width=150)
-        self.tree.column("Region Main ID", width=100)
-        self.tree.column("Region Sub", width=150)
-        self.tree.column("Region Sub ID", width=100)
-        self.tree.column("Date String", width=120)
-        self.tree.column("Date Min", width=80)
-        self.tree.column("Date Max", width=80)
-        self.tree.column("Date Circa", width=80)
+        self.tree.column("ID", width=60)
+        self.tree.column("Book name", width=100)
+        self.tree.column("Inscription number in book", width=150)
+        self.tree.column("Text", width=280)
+        self.tree.column("Metadata", width=230)
+        self.tree.column("Region main", width=150)
+        self.tree.column("Region main ID", width=100)
+        self.tree.column("Region sub", width=150)
+        self.tree.column("Region sub ID", width=100)
+        self.tree.column("Date string", width=120)
+        self.tree.column("Date min", width=80)
+        self.tree.column("Date max", width=80)
+        self.tree.column("Date circa", width=80)
         self.tree.column("Score", width=70)
 
         vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
@@ -448,6 +501,12 @@ class PackhumSearchGUI:
                                       padx=8, pady=2)
         self.xml_indicator.pack(side=tk.LEFT, padx=2)
 
+        self.json_indicator = tk.Label(self.format_frame, text="JSON",
+                                       font=("Segoe UI", 9, "bold"),
+                                       bg="#8e44ad", fg="white",
+                                       padx=8, pady=2)
+        self.json_indicator.pack(side=tk.LEFT, padx=2)
+
         right_frame = tk.Frame(export_frame, bg=self.bg_color)
         right_frame.pack(side=tk.RIGHT)
 
@@ -472,6 +531,17 @@ class PackhumSearchGUI:
                                     activebackground="#2980b9",
                                     activeforeground="white")
         self.xml_button.pack(side=tk.LEFT, padx=5)
+
+        self.json_button = tk.Button(right_frame, text="🔵 Export JSON",
+                                     command=self.export_results_json,
+                                     bg="#8e44ad", fg="white",
+                                     font=("Segoe UI", 10, "bold"),
+                                     padx=15, pady=5,
+                                     cursor="hand2",
+                                     relief=tk.FLAT,
+                                     activebackground="#7d3c98",
+                                     activeforeground="white")
+        self.json_button.pack(side=tk.LEFT, padx=5)
 
     def create_status_bar(self):
         """Create status bar"""
@@ -537,23 +607,53 @@ class PackhumSearchGUI:
         return sum(1 for c in letters if ord(c) < 128) / len(letters) > 0.5
 
     def _normalize_query(self, query):
-        """Normalise a query string according to the current input-mode setting."""
+        """Normalise a query string according to the current input-mode setting.
+
+        Applies the same sign-stripping used on the DB cache: bracket chars
+        removed, diacritics stripped, then all non-letter non-space chars dropped
+        and whitespace collapsed.  This matches the default search mode.
+        """
+        clean = self._bracket_re.sub('', query)
         mode = self.input_mode_var.get()
-        if mode == 'latin' or (mode == 'auto' and self._is_latin_input(query)):
-            return self._latin_to_greek(query)
-        return self._normalize_greek(query)
+        if mode == 'latin_translit':
+            norm = self._latin_to_greek(clean)
+        else:  # 'greek' — Latin mode never calls this function
+            norm = self._normalize_greek(clean)
+        return ' '.join(''.join(c for c in norm if c.isalpha() or c.isspace()).split())
 
     _bracket_re = re.compile(r'[\[\](){}]')
+    _latin_letters_re = re.compile(r'[a-z]+')
 
     def _precompute_normalized(self):
-        """Build per-entry stripped-text and word-list caches (called once after load)."""
+        """Build per-entry text caches.
+
+        normalized_text_cache  – bracket chars + diacritics + editorial signs
+                                  (hyphens, dots, digits, …) removed; spaces kept.
+                                  This is the default search target.
+        normalized_words_cache – word list derived from the above.
+        bare_text_cache        – same but spaces also removed; used when
+                                  "Ignore spaces" is checked.
+        """
         self.normalized_text_cache = []
         self.normalized_words_cache = []
+        self.bare_text_cache = []
+        self.latin_text_cache = []
+        self.bare_latin_text_cache = []
         for entry in self.data:
             clean = self._bracket_re.sub('', entry.get('text', ''))
             norm = self._normalize_greek(clean)
-            self.normalized_text_cache.append(norm)
-            self.normalized_words_cache.append(norm.split())
+            # Greek cache: strip non-letter non-space chars, collapse whitespace
+            signs_stripped = ' '.join(
+                ''.join(c for c in norm if c.isalpha() or c.isspace()).split()
+            )
+            self.normalized_text_cache.append(signs_stripped)
+            self.normalized_words_cache.append(signs_stripped.split())
+            # Bare Greek: spaces also removed
+            self.bare_text_cache.append(signs_stripped.replace(' ', ''))
+            # Latin cache: ASCII letter sequences from bracket-stripped raw text
+            latin = ' '.join(self._latin_letters_re.findall(clean.lower()))
+            self.latin_text_cache.append(latin)
+            self.bare_latin_text_cache.append(latin.replace(' ', ''))
 
     def _word_sequence_match(self, query_words, text_words):
         """Return True if every query word appears in text_words in the given order.
@@ -628,9 +728,39 @@ class PackhumSearchGUI:
         pct = int(100 * matched / len(query_words))
         return matched / len(query_words), f'fuzzy {pct}%'
 
+    def _build_metadata_pattern(self, query):
+        """Build a regex pattern for metadata/book-name search.
+
+        Each word token that is a valid Roman numeral (I–XXX) is expanded to
+        match either the Roman form or its Arabic equivalent as a whole word,
+        so searching 'V' will not hit 'VI' or 'VII'.  Arabic tokens 1–30 are
+        similarly expanded to also match their Roman form.
+        """
+        result = []
+        pos = 0
+        for m in re.finditer(r'[A-Za-z]+|\d+', query):
+            result.append(re.escape(query[pos:m.start()]))
+            token = m.group(0)
+            upper = token.upper()
+            if re.match(r'^[IVXLCDM]+$', upper) and upper in _ROMAN_TO_INT:
+                arabic = str(_ROMAN_TO_INT[upper])
+                result.append(r'(?:\b' + re.escape(upper) + r'\b|\b' + arabic + r'\b)')
+            elif token.isdigit():
+                num = int(token)
+                if num in _INT_TO_ROMAN:
+                    roman = _INT_TO_ROMAN[num]
+                    result.append(r'(?:\b' + roman + r'\b|\b' + re.escape(token) + r'\b)')
+                else:
+                    result.append(re.escape(token))
+            else:
+                result.append(re.escape(token))
+            pos = m.end()
+        result.append(re.escape(query[pos:]))
+        return ''.join(result)
+
     # ── data loading ──────────────────────────────────────────────────────────
 
-    def load_data(self, filename="C:\\Users\\pavesi\\Documents\\Veatriki\\iphi.json"):
+    def load_data(self, filename="C:\\PATH\\TO\\packhum.json"):
         """Load JSON data in background thread"""
         self.status_bar.config(text=f"⏳ Loading {filename}...")
         self.search_button.config(state=tk.DISABLED)
@@ -693,11 +823,16 @@ class PackhumSearchGUI:
         if self.metadata_var.get().strip():
             filters['metadata'] = self.metadata_var.get().strip()
         if self.id_var.get().strip():
-            try:
-                filters['id'] = int(self.id_var.get().strip())
-            except ValueError:
-                messagebox.showwarning("Warning", "ID must be a number")
-                return
+            filters['id'] = self.id_var.get().strip()
+
+        if self.book_name_var.get().strip():
+            filters['book_name'] = self.book_name_var.get().strip()
+        if self.book_ref_var.get().strip():
+            filters['book_ref'] = self.book_ref_var.get().strip()
+
+        filters['_regex'] = self.use_regex_var.get()
+        filters['_ignore_signs'] = self.ignore_signs_var.get()
+        filters['_input_mode'] = self.input_mode_var.get()
 
         if self.region_main_id_var.get().strip():
             filters['region_main_id'] = self.region_main_id_var.get().strip()
@@ -718,7 +853,7 @@ class PackhumSearchGUI:
         if self.date_circa_var.get():
             filters['date_circa'] = True
 
-        if not filters:
+        if not any(k not in ('_regex', '_ignore_signs', '_input_mode') for k in filters):
             messagebox.showwarning("Warning", "⚠️ Please enter at least one search filter")
             return
 
@@ -736,39 +871,99 @@ class PackhumSearchGUI:
 
     def search_entries(self, filters):
         """Search entries; returns list of (entry, score_label) tuples, ranked best-first."""
+        use_regex = filters.pop('_regex', False)
+        ignore_signs = filters.pop('_ignore_signs', False)
+        input_mode = filters.pop('_input_mode', 'greek')
         raw_text = filters.get('text', '')
-        other_filters = {k: v for k, v in filters.items() if k != 'text'}
 
-        text_query = None
+        # Split filters into categories
+        text_type = ('metadata', 'book_name', 'book_ref')
+        text_filters = {k: v for k, v in filters.items() if k in text_type}
+        other_filters = {k: v for k, v in filters.items() if k not in text_type and k != 'text'}
+
+        text_query = None      # for Greek / Greek-transliterated mode
+        latin_query = None     # for Latin script mode
         query_words = None
         if raw_text:
-            text_query = self._normalize_query(raw_text)
-            query_words = text_query.split()
+            if use_regex:
+                text_query = raw_text  # used as-is against raw polytonic text
+            elif input_mode == 'latin':
+                # Latin mode: match raw ASCII letters only
+                latin_query = ' '.join(self._latin_letters_re.findall(raw_text.lower()))
+            else:
+                text_query = self._normalize_query(raw_text)
+                query_words = text_query.split()
 
         scored = []  # (score, entry, label)
 
         for i, entry in enumerate(self.data):
-            # ── non-text filters ─────────────────────────────────────────────
             skip = False
+
+            # Exact / typed filters (ID, date_circa, numeric dates, regions)
             for field, search_value in other_filters.items():
                 field_value = entry.get(field, '')
                 if field == 'id':
-                    if field_value != search_value:
+                    if str(field_value) != str(search_value):
                         skip = True; break
                 elif field == 'date_circa':
                     if field_value != search_value:
                         skip = True; break
                 else:
-                    if search_value.lower() not in str(field_value).lower():
+                    if str(search_value).lower() not in str(field_value).lower():
                         skip = True; break
             if skip:
                 continue
 
-            # ── text filter ──────────────────────────────────────────────────
-            if text_query is None:
+            # Text-type filters: metadata, book_name, book_ref
+            for field, search_value in text_filters.items():
+                field_value = str(entry.get(field, ''))
+                if use_regex:
+                    try:
+                        if not re.search(search_value, field_value, re.IGNORECASE):
+                            skip = True; break
+                    except re.error:
+                        skip = True; break
+                elif field in ('metadata', 'book_name'):
+                    pat = self._build_metadata_pattern(search_value)
+                    if not re.search(pat, field_value, re.IGNORECASE):
+                        skip = True; break
+                else:  # book_ref: plain substring
+                    if search_value.lower() not in field_value.lower():
+                        skip = True; break
+            if skip:
+                continue
+
+            # Inscription text filter
+            if text_query is None and latin_query is None:
                 scored.append((5.0, entry, '—'))
                 continue
 
+            if use_regex:
+                try:
+                    if re.search(text_query, entry.get('text', ''), re.IGNORECASE):
+                        scored.append((4.0, entry, 'regex'))
+                except re.error:
+                    pass
+                continue
+
+            # ── Latin script mode ────────────────────────────────────────────
+            if latin_query is not None:
+                if ignore_signs:
+                    bare_lq = latin_query.replace(' ', '')
+                    if bare_lq:
+                        bare_db = self.bare_latin_text_cache[i] if self.bare_latin_text_cache is not None else self.latin_text_cache[i].replace(' ', '')
+                        if bare_lq in bare_db:
+                            scored.append((4.0, entry, 'latin bare'))
+                            continue
+                db_latin = self.latin_text_cache[i] if self.latin_text_cache is not None else ' '.join(self._latin_letters_re.findall(self._bracket_re.sub('', entry.get('text', '')).lower()))
+                lq_words = latin_query.split()
+                result = self._auto_score(lq_words, db_latin, db_latin.split())
+                if result is not None:
+                    score, label = result
+                    scored.append((score, entry, 'latin:' + label))
+                continue
+
+            # ── Greek / transliteration mode ─────────────────────────────────
             if self.normalized_text_cache is not None:
                 db_text = self.normalized_text_cache[i]
                 db_words = self.normalized_words_cache[i]
@@ -776,6 +971,18 @@ class PackhumSearchGUI:
                 clean = self._bracket_re.sub('', entry.get('text', ''))
                 db_text = self._normalize_greek(clean)
                 db_words = db_text.split()
+
+            # Bare-exact tier: catches words split by brackets or hyphens.
+            if ignore_signs:
+                bare_query = ''.join(c for c in text_query if c.isalpha())
+                if bare_query:
+                    if self.bare_text_cache is not None:
+                        bare_db = self.bare_text_cache[i]
+                    else:
+                        bare_db = ''.join(c for c in db_text if c.isalpha())
+                    if bare_query in bare_db:
+                        scored.append((4.0, entry, 'bare exact'))
+                        continue
 
             result = self._auto_score(query_words, db_text, db_words)
             if result is not None:
@@ -788,7 +995,7 @@ class PackhumSearchGUI:
     def display_results(self, results):
         """Display search results in treeview. results = [(entry, score_label), ...]"""
         self.current_results = [r[0] for r in results]
-        self._result_scores = {r[0].get('id'): r[1] for r in results}
+        self._result_scores = {str(r[0].get('id')): r[1] for r in results}
 
         result_icon = "🔍" if len(results) == 0 else "✅" if len(results) < 1000 else "📊"
         self.results_count_label.config(
@@ -802,6 +1009,8 @@ class PackhumSearchGUI:
             meta_val = entry.get('metadata', 'N/A')
             self.tree.insert("", tk.END, values=(
                 entry.get('id', 'N/A'),
+                entry.get('book_name', 'N/A'),
+                entry.get('book_ref', 'N/A'),
                 text_val[:200] + "…" if len(text_val) > 200 else text_val,
                 meta_val[:150] + "…" if len(meta_val) > 150 else meta_val,
                 entry.get('region_main', 'N/A'),
@@ -837,9 +1046,9 @@ class PackhumSearchGUI:
         values = self.tree.item(iid)['values']
         if not values:
             return
-        selected_id = values[0]
+        selected_id = str(values[0])
         for result in self.current_results:
-            if result.get('id') == selected_id:
+            if str(result.get('id')) == selected_id:
                 self.display_entry_details(result)
                 break
 
@@ -848,14 +1057,14 @@ class PackhumSearchGUI:
         sel = self.tree.selection()
         if not sel:
             return self.current_results
-        selected_ids = {self.tree.item(iid)['values'][0] for iid in sel}
-        return [e for e in self.current_results if e.get('id') in selected_ids]
+        selected_ids = {str(self.tree.item(iid)['values'][0]) for iid in sel}
+        return [e for e in self.current_results if str(e.get('id')) in selected_ids]
 
     def display_entry_details(self, entry):
         """Display full entry details in text area"""
         self.details_text.delete(1.0, tk.END)
 
-        score = self._result_scores.get(entry.get('id'), '')
+        score = self._result_scores.get(str(entry.get('id')), '')
         score_suffix = f"  [match: {score}]" if score and score not in ('—', '✓') else ""
 
         details = f"""
@@ -863,6 +1072,7 @@ class PackhumSearchGUI:
 ║                              INSCRIPTION DETAILS                              ║
 ╠══════════════════════════════════════════════════════════════════════════════╣
 ║ ID: {str(str(entry.get('id', 'N/A')) + score_suffix).ljust(67)}║
+║ Book: {str(entry.get('book_name', 'N/A'))[:28].ljust(28)}  Ref: {str(entry.get('book_ref', ''))[:33].ljust(33)}║
 ╠══════════════════════════════════════════════════════════════════════════════╣
 ║ TEXT:                                                                        ║
 ║ {self.format_text(entry.get('text', 'N/A'), 70)}║
@@ -919,7 +1129,7 @@ class PackhumSearchGUI:
 
         if filename:
             try:
-                fieldnames = ['id', 'text', 'metadata', 'region_main', 'region_main_id',
+                fieldnames = ['id', 'book_name', 'book_ref', 'text', 'metadata', 'region_main', 'region_main_id',
                              'region_sub', 'region_sub_id', 'date_str', 'date_min',
                              'date_max', 'date_circa']
 
@@ -975,11 +1185,38 @@ class PackhumSearchGUI:
             except Exception as e:
                 messagebox.showerror("Error", f"❌ Failed to export XML: {str(e)}")
 
+    def export_results_json(self):
+        """Export selected rows (or all results) to JSON, matching input json format."""
+        entries = self._get_selected_entries()
+        if not entries:
+            messagebox.showwarning("Warning", "⚠️ No results to export")
+            return
+
+        base_filename = self.output_filename_var.get().strip() or "search_results_packhum"
+        filename = filedialog.asksaveasfilename(
+            title="Save JSON file",
+            initialfile=f"{base_filename}.json",
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
+        )
+
+        if filename:
+            try:
+                with open(filename, 'w', encoding='utf-8') as f:
+                    json.dump(entries, f, ensure_ascii=False, indent=2)
+                messagebox.showinfo("Success", f"✅ Exported {len(entries):,} entries to {filename}")
+                self.status_bar.config(text=f"✅ Exported {len(entries):,} entries to JSON")
+            except Exception as e:
+                messagebox.showerror("Error", f"❌ Failed to export JSON: {str(e)}")
+
     def clear_filters(self):
         """Clear all filter fields"""
         self.text_var.set("")
         self.metadata_var.set("")
         self.id_var.set("")
+        self.book_name_var.set("")
+        self.book_ref_var.set("")
+        self.use_regex_var.set(False)
         self.region_main_id_var.set("")
         self.region_main_var.set("")
         self.region_sub_id_var.set("")
@@ -1000,41 +1237,44 @@ class PackhumSearchGUI:
 
     def show_about(self):
         """Show about dialog"""
-        about_text = """🏛️ Veatriki, a Packhum search and export tool by Beatrice "Bice" Pavesi
-═══════════════════════════════════
+        about_text = """🏛️ Veatriki — PHI Greek Inscriptions search tool
+by Beatrice "Bice" Pavesi (pavesi@chalmers.se)
+═══════════════════════════════════════════════
 
-A graphical interface for searching the Packard Humanities Institute (PHI) database of Greek inscriptions.
+A graphical interface for searching the Packard Humanities
+Institute (PHI) database of Greek inscriptions.
 
 ✨ Features:
-• Search by text, metadata, and ID
-• Search by region (name or ID)
-• Search by date criteria
-• Export results to CSV or XML
-• Real-time search results
-• Detailed inscription viewer
+• Search by inscription ID, text, metadata, book name/number
+• Filter by region (name or ID) and date
+• Regex support in text and metadata search bars
+• Ignore editorial signs ([ ] { } ( ) · - …) during text search
+• Export results to CSV, XML, or JSON
+• Detailed inscription viewer with match score
 
-🔍 Text Search Modes:
-• Exact substring  – classic substring match
-• Word sequence    – words appear in order, gaps allowed
-• Fuzzy            – typo-tolerant, ranks by match quality
+🔍 Text Search Ranking (Greek & transliteration modes):
+• Exact substring   – score 4  (highest)
+• All words present – score 3
+• Word sequence     – score 2
+• Fuzzy             – score 0–1
 
 🔤 Input Modes:
-• Auto-detect      – Greek vs Latin detected automatically
-• Greek/Polytonic  – diacritics stripped before matching
-• Latin translit.  – th=θ  ph=φ  ch=χ  ps=ψ  ks=ξ  w=ω  h=η  x=ξ
+• Greek / Polytonic  – diacritics stripped before matching;
+                       matches Greek-script inscriptions only
+• Latin translit.    – th=θ  ph=φ  ch=χ  ps=ψ  ks=ξ  rh=ρ
+                       w=ω  h=η  x=ξ  y=υ;
+                       matches Greek-script inscriptions only
+• Latin script       – matches ASCII letter sequences;
+                       matches Latin-script inscriptions only
 
-📊 Database stats:
-Contains over 178,000 inscriptions, covering most of PHI's Greek epigraphy collection, except entries with more than 10 percent Latin text.
+📊 Data source:
+packhum.json — all entries from epigraphy.packhum.org
 
 🔧 Technical:
-• Built with Python and tkinter
-• Threaded operations for smooth UI
+• Built with Python 3 and tkinter
+• Background threading for smooth UI during load and search
 
-📚 Requires:
-• Python 3.7+
-• iphi.json by Sommerschield et al. (https://github.com/sommerschield/iphi.git)
-
-Version 1.1
+Version 2.2
 """
         messagebox.showinfo("About Veatriki", about_text)
 
@@ -1052,12 +1292,19 @@ Version 1.1
 🚪 Exit:             Ctrl+Q
 
 💡 Tips:
-• Use partial words - search is case-insensitive
-• Region ID takes precedence over region name
+• Accents and diacritics are stripped automatically (Greek modes)
+• "Ignore editorial signs" strips [ ] { } ( ) · - and digits from
+  both query and database text before matching — useful for words
+  split across brackets or line breaks
+• "Also ignore spaces" additionally removes spaces, so a bare
+  letter sequence matches even across line endings
+• Use regex mode for full regular-expression matching in the
+  text and metadata fields (Python re syntax)
+• Latin translit.: th=θ  ph=φ  ch=χ  ps=ψ  ks=ξ  rh=ρ  w=ω
+• Region ID takes precedence over region name if both are filled
 • BCE years are negative numbers (e.g., -275)
-• Export all results (no limit in CSV/XML)
-• Accents are stripped automatically in all modes
-• Latin mode: th=θ  ph=φ  ch=χ  ps=ψ  w=ω
+• JSON export preserves the full entry format of packhum.json,
+  so results can be fed back as input for iterative searches
 """
         messagebox.showinfo("Keyboard Shortcuts", shortcuts_text)
 
